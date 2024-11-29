@@ -1,0 +1,342 @@
+---
+output: html_document
+runtime: shiny
+---
+
+## Relación entre condiciones climáticas y calidad de aire vs. casos de Leishmaniasis y Leptospirosis, 2024
+
+### **Librerías/paquetes**
+
+En esta sección se cargan las principales librerías utilizadas para el análisis y visualización de datos. Las librerías incluyen herramientas para manipulación de datos, creación de gráficos interactivos y tablas dinámicas.
+
+```{r echo=TRUE, message=FALSE, warning=FALSE}
+library(readxl)
+library(readr)
+library(dplyr)
+library(plotly)
+library(shiny)
+library(ggpubr)
+library(stringr) 
+library(DT)
+```
+
+### **Carga de base de datos**
+
+Las bases de datos empleadas en este análisis corresponden a dos conjuntos de datos: uno que registra los casos de Leishmaniasis y Leptospirosis por semana epidemiológica, y otro que contiene registros climáticos y de calidad del aire por fecha
+
+```{r}
+casos <- read_excel("data/casos.xlsx", sheet = "DATASET")
+clima_calidad_aire <- read_csv("data/clima_calidad_aire.csv", 
+    col_types = cols(ccpp_ubigeo = col_character()))
+
+```
+
+### **Visualización de base de datos**
+
+Aquí se presenta una visualización interactiva de las bases de datos cargadas, permitiendo explorar los datos de manera dinámica.
+
+```{r}
+datatable(casos)
+```
+
+```{r}
+datatable(clima_calidad_aire)
+```
+
+### **Filtrado**
+
+En esta sección se realiza el filtrado de los datos de casos reportados. Se obtiene la semana actual utilizando la función `Sys.Date()` y se filtran los registros que corresponden hasta esta semana epidemiológica. Además, se reemplazan los valores faltantes (`NA`) en la columna de casos (`N`) por ceros para garantizar que no se pierda información durante los análisis. La base filtrada muestra los datos procesados listos para ser utilizados en las siguientes etapas.
+
+```{r}
+# Obtener la semana actual
+current_week <- as.numeric(format(Sys.Date(), "%U")) + 1
+
+# Filtrar las semanas hasta la actual y llenar NA con 0 en la columna N
+casos_filtrados <- casos %>%
+  filter(SE <= current_week) %>%
+  mutate(N = ifelse(is.na(N), 0, N))
+
+# Mostrar el resultado
+datatable(casos_filtrados)
+```
+
+Aquí se filtran los datos climáticos para mantener únicamente los registros correspondientes al año 2024 y al `ccpp_ubigeo` específico seleccionado. Además, se eliminan variables no deseadas, que no forman parte de las variables climáticas necesarias para el análisis.
+
+```{r}
+# Filtrar los datos de 2024 y eliminar las variables no deseadas
+clima_calidad_aire_filtrados <- clima_calidad_aire %>%
+  filter(
+    ccpp_ubigeo == "1000000000",  # Filtrar por ccpp_ubigeo
+    format(day, "%Y") == "2024",  # Filtrar por año 2024
+    !variable %in% c("dengue", "leptospirosis", "malaria") # Excluir variables no deseadas
+  )
+
+datatable(clima_calidad_aire_filtrados)
+```
+
+Se agregan las columnas `ANO` y `SE` a la base de datos climáticos para facilitar su comparación con los casos de enfermedades. Esto se logra extrayendo el año y calculando la semana epidemiológica correspondiente para cada registro.
+
+```{r}
+# Añadir las columnas "ANO" y "SE" en clima_calidad_aire_filtrados
+clima_calidad_aire_filtrados <- clima_calidad_aire_filtrados %>%
+  mutate(
+    ANO = as.numeric(format(day, "%Y")),   # Extraer el año
+    SE = as.numeric(format(day, "%U")) + 1 # Calcular semanas epidemiológicas
+  )
+
+# Calcular el promedio de "value" por SE y variable
+promedios_SE <- clima_calidad_aire_filtrados %>%
+  group_by(ANO, SE, variable) %>%
+  summarise(promedio_value = mean(value, na.rm = TRUE), .groups = "drop")
+```
+
+Los valores climáticos se agrupan por año (`ANO`), semana (`SE`) y tipo de variable climática (`variable`) para calcular el promedio de cada variable en cada grupo. Este paso asegura que los datos climáticos estén en el mismo nivel de granularidad que los datos de casos.
+
+### **Unión de bases**
+
+Se realiza una unión (`left_join`) entre las bases de datos de promedios climáticos y los casos de enfermedades utilizando las columnas comunes (`ANO` y `SE`). Esto permite relacionar los valores climáticos promedio con los casos reportados en el mismo período.
+
+```{r warning=FALSE}
+# Unir el promedio de value por SE con la base de casos_filtrados
+merged_data <- promedios_SE %>%
+  left_join(casos_filtrados, by = c("ANO" = "ANO", "SE" = "SE"))
+
+# Reemplazar valores NA en la columna N por 0
+merged_data <- merged_data %>%
+  mutate(variable = ifelse(is.na(variable), 0, variable))
+```
+
+### **Gráficas**
+
+**Evolution de casos por semana epidemiológica:** La primera gráfica muestra la evolución temporal de los casos reportados de una enfermedad específica a lo largo de las semanas epidemiológicas del año 2024. En el eje X se representan las semanas epidemiológicas (SE), mientras que en el eje Y se observa el número de casos reportados (`N`). Esta visualización permite identificar tendencias temporales, como aumentos o disminuciones en la incidencia de la enfermedad, así como detectar picos de casos en semanas específicas.
+
+```{r echo=FALSE, warning=FALSE}
+# UI
+ui <- fluidPage(
+  tags$style(HTML("
+    .container-fluid {
+      width: 90%; /* Ajusta el ancho al 90% de la ventana del navegador */
+      max-width: 2000px; /* Limita el ancho máximo a 1500px */
+    }
+  ")),
+  
+  # Fila de selección
+  fluidRow(
+    column(4, 
+           selectInput("selected_disease", "Enfermedad:", 
+                       choices = unique(str_to_title(casos_filtrados$NOMBRE)), # Convertir a formato título
+                       selected = unique(str_to_title(casos_filtrados$NOMBRE))[1])
+    ),
+    column(4, 
+           sliderInput("selected_week", "SE", 
+                       min = min(casos_filtrados$SE, na.rm = TRUE), 
+                       max = max(casos_filtrados$SE, na.rm = TRUE), 
+                       value = c(min(casos_filtrados$SE, na.rm = TRUE), max(casos_filtrados$SE, na.rm = TRUE)),
+                       sep = "")
+    ),
+    column(4, 
+           selectInput("chart_type", "Gráfico:", 
+                       choices = c("Evolución (Líneas)" = "line", 
+                                   "Barras" = "bar"), 
+                       selected = "line")
+    ),
+    column(4, 
+           selectInput("data_type", "Tipo de datos:", 
+                       choices = c("Totales" = "total", 
+                                   "Acumulados" = "cumulative"), 
+                       selected = "total")
+    )
+  ),
+  
+  # Salida del gráfico
+  plotOutput("linePlot")
+)
+
+# Server
+server <- function(input, output) {
+  
+  # Filtrar y procesar los datos según las selecciones
+  filtered_data <- reactive({
+    data <- casos_filtrados %>%
+      mutate(NOMBRE = str_to_title(NOMBRE)) # Convertir nombres a formato título
+    
+    # Filtrar por enfermedad seleccionada
+    data <- data %>% filter(NOMBRE == input$selected_disease)
+    
+    # Filtrar por rango de semanas
+    data <- data %>% filter(SE >= input$selected_week[1] & SE <= input$selected_week[2])
+    
+    # Agrupar por semana epidemiológica y sumar casos
+    data <- data %>% group_by(SE) %>% summarise(N = sum(N, na.rm = TRUE))
+    
+    # Calcular acumulado si se selecciona esta opción
+    if (input$data_type == "cumulative") {
+      data <- data %>% mutate(N = cumsum(N))
+    }
+    
+    return(data)
+  })
+  
+  # Renderizar el gráfico
+  output$linePlot <- renderPlot({
+    data <- filtered_data()
+    
+    # Crear el gráfico dinámicamente
+    if (input$chart_type == "line") {
+      # Gráfico de líneas
+      ggplot(data, aes(x = SE, y = N)) +
+        geom_line(color = "#103b92", linewidth = 1.5) +
+        geom_point(color = "#103b92", shape = 21, fill = "white") +
+        scale_x_continuous(breaks = seq(1, max(data$SE), by = 5)) + # Eje X de 5 en 5
+        labs(
+          x = "Semana Epidemiológica (SE)",
+          y = ifelse(input$data_type == "cumulative", "Número Acumulado de Casos", "Número de Casos (N)")
+        ) +
+        theme_minimal(base_size = 15) +
+        theme(
+          panel.grid.major = element_blank(), # Sin rejillas mayores
+          panel.grid.minor = element_blank(), # Sin rejillas menores
+          panel.background = element_blank(), # Fondo blanco
+          plot.background = element_blank(),  # Fondo del gráfico blanco
+          panel.border = element_rect(color = "black", fill = NA) # Borde negro
+        )
+    } else if (input$chart_type == "bar") {
+      # Gráfico de barras
+      ggplot(data, aes(x = SE, y = N)) +
+        geom_bar(stat = "identity", fill = "#103b92", color = "white") +
+        scale_x_continuous(breaks = seq(1, max(data$SE), by = 5)) + # Eje X de 5 en 5
+        labs(
+          x = "Semana Epidemiológica (SE)",
+          y = ifelse(input$data_type == "cumulative", "Número Acumulado de Casos", "Número de Casos (N)")
+        ) +
+        theme_minimal(base_size = 15) +
+        theme(
+          panel.grid.major = element_blank(), # Sin rejillas mayores
+          panel.grid.minor = element_blank(), # Sin rejillas menores
+          panel.background = element_blank(), # Fondo blanco
+          plot.background = element_blank(),  # Fondo del gráfico blanco
+          panel.border = element_rect(color = "black", fill = NA) # Borde negro
+        )
+    }
+  })
+}
+
+# Ejecutar la app
+shinyApp(
+  ui = ui,
+  server = server,
+  options = list(launch.browser = TRUE, height = 600)
+)
+
+
+
+```
+
+**Relación de casos y variable climática por semana epidemiológica**: La segunda gráfica ilustra la relación entre una variable climática específica y el número de casos reportados de una enfermedad, incorporando un análisis estadístico de correlación. En el eje X se representa el valor promedio de la variable climática seleccionada (por ejemplo, temperatura, humedad), mientras que en el eje Y se muestra el número de casos (`N`) de la enfermedad. La gráfica incluye una línea de regresión ajustada que indica la tendencia general de la relación entre las dos variables, acompañada de un intervalo de confianza sombreado. Además, se presenta el coeficiente de correlación (R) y el valor p (p-value), los cuales permiten evaluar la intensidad y significancia de la relación entre las variables
+
+```{r echo=FALSE, warning=FALSE}
+# Crear un mapeo entre las variables y sus descripciones
+variable_labels <- list(
+  "high_temp" = "Temperatura máxima (°C)",
+  "low_temp" = "Temperatura mínima (°C)",
+  "out_humm" = "Humedad (%)",
+  "p_10_0_um" = "PM10 (μg/m3)",
+  "p_2_5_um" = "PM2.5 (μg/m3)",
+  "rain" = "Lluvia acumulada (mm)",
+  "rain_rate" = "Lluvia promedio (mm/h)",
+  "temp_out" = "Temperatura (°C)",
+  "wind_speed" = "Velocidad del viento (km/h)"
+)
+
+# Convertir el mapeo a un vector para el selector
+variable_choices <- setNames(names(variable_labels), unlist(variable_labels))
+
+
+# Obtener los nombres de las enfermedades en formato título
+disease_choices <- merged_data$NOMBRE %>%
+  unique() %>%
+  str_to_title() %>% # Convertir a formato título
+  sort()
+
+
+# UI
+ui <- fluidPage(
+  
+  tags$style(HTML("
+    .container-fluid {
+      width: 90%; /* Ajusta el ancho al 90% de la ventana del navegador */
+      max-width: 1500px; /* Limita el ancho máximo a 1500px */
+    }
+  ")),
+  
+  # Fila de selección para la enfermedad y la variable climática
+  fluidRow(
+    column(4, 
+           selectInput("selected_disease", "Enfermedad:", 
+                       choices = disease_choices, 
+                       selected = disease_choices[1])
+    ),
+    column(4, 
+           selectInput("selected_climate_var", "Variable climática:", 
+                       choices = variable_choices,
+                       selected = names(variable_choices)[1])
+    )
+  ),
+  
+  # Salida del gráfico
+  plotOutput("correlationPlot")
+)
+
+# Server
+server <- function(input, output) {
+  
+  # Filtrar los datos según la enfermedad y la variable climática seleccionadas
+  filtered_data <- reactive({
+    merged_data %>%
+      mutate(NOMBRE = str_to_title(NOMBRE)) %>% # Convertir NOMBRE a formato título
+      filter(
+        NOMBRE == input$selected_disease,       # Filtrar por enfermedad
+        variable == input$selected_climate_var, # Filtrar por variable climática
+        !is.na(promedio_value),                # Eliminar valores NA en la variable climática
+        !is.na(N)                              # Eliminar valores NA en N
+      )
+  })
+  
+  # Renderizar el gráfico de correlación
+  output$correlationPlot <- renderPlot({
+    data <- filtered_data()
+    
+    ggscatter(
+      data,
+      x = "promedio_value", 
+      y = "N",
+      add = "reg.line",              # Agregar línea de regresión
+      conf.int = TRUE,               # Agregar intervalo de confianza
+      cor.coef = TRUE,               # Mostrar coeficiente de correlación
+      cor.method = "pearson",        # Método de correlación (Pearson)
+      cor.coef.size = 5,             # Tamaño del coeficiente
+      add.params = list(color = "#103b92", fill = "#9ccbcf", size=1.75) # Personalizar línea
+    ) +
+      labs(
+        x = variable_labels[[input$selected_climate_var]], # Etiqueta descriptiva para el eje X
+        y = paste(str_to_title(input$selected_disease), "(N)") # Etiqueta del eje Y con formato título
+      ) +
+      theme_minimal(base_size = 15) + # Fondo blanco
+      theme(
+        panel.grid.major = element_blank(), # Sin rejillas principales
+        panel.grid.minor = element_blank(), # Sin rejillas menores
+        panel.border = element_rect(color = "black", fill = NA, size = 1) # Borde negro
+      )
+  })
+}
+
+# Ejecutar la app
+shinyApp(
+  ui = ui,
+  server = server,
+  options = list(launch.browser = TRUE, height = 600)
+)
+
+
+
+```
