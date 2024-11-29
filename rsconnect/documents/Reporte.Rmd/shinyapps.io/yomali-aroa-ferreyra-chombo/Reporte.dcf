@@ -1,0 +1,12 @@
+name: Reporte
+title: Reporte
+username: yomali-aroa-ferreyra-chombo
+account: yomali-aroa-ferreyra-chombo
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 13480127
+bundleId: 9436221
+url: https://yomali-aroa-ferreyra-chombo.shinyapps.io/Reporte/
+version: 1
+asMultiple: FALSE
+asStatic: FALSE
